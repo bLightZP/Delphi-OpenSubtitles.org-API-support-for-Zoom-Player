@@ -25,10 +25,10 @@
         And XML parsing form Stefan Heymann:
         http://www.destructor.de/xmlparser/index.htm
 
-        And adapted code snippets from Yanniel Alvarez :
+        And code snippets from Yanniel Alvarez :
         http://www.yanniel.info/2012/01/open-subtitles-api-in-delphi.html
 
-        And adapted OSDb hashing code from :
+        And OSDb hashing code from :
         http://trac.opensubtitles.org/projects/opensubtitles/wiki/HashSourceCodes#Delphi
 
         And optionally, the FastMM/FastCode/FastMove libraries:
@@ -36,8 +36,8 @@
 
         Hopefully, I haven't forggoten anyone.
 
-        Most of the remaining code by Yaron Gur, Zoom Player's lead developer:
-        http://inmatrix.com.
+        Most of the remaining code by Yaron Gur, Zoom Player lead developer:
+        http://inmatrix.com
         }
 
 // to do :
@@ -49,9 +49,11 @@
 // [x]  6. parse login
 // [x]  7. parse search
 // [x]  8. parse keepalive pings
-// [x]  9. look into gzip communication
-// [ ] 10. handle '407 Download limit reached', do not use persistent connections (HTTP keep-alive) and don't download more than 200 subtitles per 24 hour per IP/User. If user wants more, he can ?Become OpenSubtitles VIP member - thats one of the many reasons, why your app should allow user to login.
-// [p] 11. properly handle HTTP status codes, sometimes you might get 5xx
+// [x]  9. implement gzip communication
+// [ ] 10. handle '407 Download limit reached', do not use persistent connections (HTTP keep-alive) and don't download more than 200 subtitles per 24 hour per IP/User.
+//         If user wants more, he can ?Become OpenSubtitles VIP member - thats one of the many reasons, why your app should allow user to login.
+// [x] 11. Fix utf8 handling in xmlparser
+// [x] 12. properly handle HTTP status codes, sometimes you might get 5xx
 
 
 library OpenSubtitles.org;
@@ -91,8 +93,6 @@ Type
   end;
 
 Const
-  {$I APIKEY.INC}
-
   // Settings Registry Path and Key
   PluginRegKey               : String = 'Software\VirtuaMedia\ZoomPlayer\SubtitlePlugins\OpenSubtitles.org';
   RegKey_Username            : String = 'user';
@@ -150,6 +150,7 @@ begin
 end;
 
 
+
 procedure TStayAliveThread.Execute;
 const
   PingDelay     : Integer = 15*60*1000; // 15min in
@@ -179,32 +180,39 @@ begin
     Begin
       {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'StayAlive ping (before)');{$ENDIF}
       PingTS := CurrentTS+PingDelay;
-      csStayAlive.Enter;
-      Try
-        StayAliveData^.Status := E_FAIL;
-      Finally
-        csStayAlive.Leave;
-      End;
-      OSDb_StayAlive(cToken,cUserAgent,StayAliveData,cSecure);
 
-      If (StayAliveData^.Status = E_FAIL) or (StayAliveData^.Status = 406) then
+      // Only ping if we are logged in
+      If LoggedIn = True then
       Begin
-        {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'StayAlive: not logged in!');{$ENDIF}
-        If LoggedIn = True then
+        csStayAlive.Enter;
+        Try
+          StayAliveData^.Status := E_FAIL;
+        Finally
+          csStayAlive.Leave;
+        End;
+        OSDb_StayAlive(cToken,cUserAgent,StayAliveData,cSecure);
+
+        If (StayAliveData^.Status = E_FAIL) or (StayAliveData^.Status = 406) then
         Begin
-          csStayAlive.Enter;
-          Try
-            LoggedIn := False;
-            Dispose(cLoginData);
-          Finally
-            csStayAlive.Leave;
+          {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'StayAlive: not logged in!');{$ENDIF}
+          If LoggedIn = True then
+          Begin
+            csStayAlive.Enter;
+            Try
+              LoggedIn := False;
+              Dispose(cLoginData);
+            Finally
+              csStayAlive.Leave;
+            End;
           End;
         End;
-      End;
+      End
+      Else {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Skipping ping, not logged in'){$ENDIF};
+
       {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'StayAlive ping (after)');{$ENDIF}
     End;
   End;
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'StayAlive thread execute (after)');{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'StayAlive thread execute (after)'+CRLF);{$ENDIF}
   Dispose(StayAliveData);
   ThreadStatus := 255; // signal thread is terminated
 end;
@@ -218,10 +226,12 @@ begin
   DestroyStayAliveThread;
   If LoggedIn = True then
   Begin
+    {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Logout (before)');{$ENDIF}
     OSDb_Logout(cUser,cUserAgent,cSecure);
+    {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Logout (after)');{$ENDIF}
     Dispose(cLoginData);
   End;
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Free Plugin (after)');{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Free Plugin (after)'+CRLF);{$ENDIF}
 end;
 
 
@@ -235,7 +245,7 @@ begin
   // Read username/password MD5 checksum from registry
   cUser    := GetRegString(HKEY_CURRENT_USER,PluginRegKey,RegKey_Username);
   cPassMD5 := GetRegString(HKEY_CURRENT_USER,PluginRegKey,RegKey_PasswordMD5);
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Init Plugin (after)');{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Init Plugin (after)'+CRLF);{$ENDIF}
 end;
 
 
@@ -245,7 +255,7 @@ function CanConfigure : Bool; stdcall;
 begin
   {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'CanConfigure (before)');{$ENDIF}
   Result := True;
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'CanConfigure (after)');{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'CanConfigure (after)'+CRLF);{$ENDIF}
 end;
 
 
@@ -253,7 +263,6 @@ end;
 Procedure Configure(CenterOnWindow : HWND); stdcall;
 var
   CenterOnRect : TRect;
-  tmpInt: Integer;
 begin
   {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Configure (before)');{$ENDIF}
   If GetWindowRect(CenterOnWindow,CenterOnRect) = False then
@@ -265,12 +274,13 @@ begin
 
   ConfigForm.UsernameEdit.Text := UTF8Decode(cUser);
   ConfigForm.PasswordEdit.Text := cPassMD5;
+  ConfigForm.PasswordEdit.Tag  := 0;
   If ConfigForm.ShowModal = mrOK then
   Begin
     cUser    := ConfigForm.UsernameEdit.Text;
     cPass    := ConfigForm.PasswordEdit.Text;
 
-    If ConfigForm.PasswordEdit.Tag = 0 then
+    If ConfigForm.PasswordEdit.Tag = 1 then
       cPassMD5 := StringMD5Digest(cPass) else
       cPassMD5 := cPass;
     cPass    := '';
@@ -280,10 +290,52 @@ begin
     SetRegString(HKEY_CURRENT_USER,PluginRegKey,RegKey_PasswordMD5,cPassMD5);
   End;
   ConfigForm.Free;
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Configure (after)');{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Configure (after)'+CRLF);{$ENDIF}
 end;
 
 
+function DownloadSubtitleZipFile(DownloadData : PSubDownloadRecord) : Integer; stdCall;
+var
+  mStream    : TMemoryStream;
+  httpStatus : String;
+  sURL       : String;
+  ErrCode    : Integer;
+  sData      : String;
+
+begin
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'DownloadSubtitleZipFile (before)');{$ENDIF}
+  Result := E_FAIL;
+
+  mStream := TMemoryStream.Create;
+  sURL    := DownloadData^.subURL;
+
+  //If (cUser <> '') and (cPassMD5 <> '') then sURL := cUser+':'+cPassMD5+'@'+sURL;
+
+  If DownloadFileToStream(sURL,mStream,httpStatus,ErrCode,4000) = True then
+  Begin
+    {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Download successful, '+IntToStr(mStream.Size)+'bytes');{$ENDIF}
+    mStream.Position := 0;
+    SetLength(sData,mStream.Size);
+
+    //mStream.Read(sData[1],mStream.Size);
+    //DownloadData^.subData       := PChar(sData);
+    mStream.Read(DownloadData^.subData^,mStream.Size);
+
+    DownloadData^.subDataLength := mStream.Size;
+    Result := S_OK;
+  End
+  {$IFDEF LOCALTRACE}Else DebugMsgFT(logPath,'DownloadFileToStream failed, status: '+httpStatus+', ERROR #'+IntToHex(ErrCode,8)){$ENDIF};
+  mStream.Free;
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'DownloadSubtitleZipFile (after)'+CRLF);{$ENDIF}
+end;
+
+
+// Result codes:
+// E_FAIL         - initial value
+// S_OK           - successful search
+// E_ACCESSDENIED - Login failure
+// E_HANDLE       - Source file doesn't exist
+// E_NOINTERFACE  - Call to OSDb_SearchSubtitles failed.
 Function GetSubtitleEntries(CenterOnWindow : HWND; SubData : PSubPluginRecord) : Integer; stdcall;
 var
   sFileName : WideString;
@@ -327,6 +379,7 @@ begin
       else
     Begin
       {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Login failed!'+CRLF);{$ENDIF}
+      Result := E_ACCESSDENIED;
     End;
   End;
 
@@ -351,9 +404,11 @@ begin
         If OSDb_SearchSubtitles(cToken,cUserAgent,sFileHash,iFileSize,SubData,cSecure) = S_OK then
         Begin
           Result := S_OK;
-        End;
+        End
+        Else Result := E_NOINTERFACE;
       End;
-    End;
+    End
+    Else Result := E_HANDLE;
   End;
 
   {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'GetSubtitleEntries, Result : '+IntToHex(Result,8)+' (after)');{$ENDIF}
@@ -367,8 +422,11 @@ exports
    FreePlugin,
    CanConfigure,
    Configure,
-   GetSubtitleEntries;
+   GetSubtitleEntries,
+   DownloadSubtitleZipFile;
 
 begin
+  // Required to notify the memory manager that this DLL is being called from a multi-threaded application!
+  IsMultiThread := True;
 end.
 

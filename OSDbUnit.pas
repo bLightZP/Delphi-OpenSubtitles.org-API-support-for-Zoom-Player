@@ -7,6 +7,7 @@ uses
   libxmlparser, SyncObjs;
 
 const
+  {$I APIKEY.INC}
   OSDbURLnormal : String = 'http://api.opensubtitles.org:80/xml-rpc';
   OSDbURLsecure : String = 'https://api.opensubtitles.org:443/xml-rpc';
 
@@ -35,6 +36,14 @@ type
   End;
   POSDbLoginRecord = ^TOSDbLoginRecord;
 
+  TSubDownloadRecord =
+  Record
+    subURL        : PChar;
+    subData       : PChar;
+    subDataLength : Integer;
+  End;
+  PSubDownloadRecord = ^TSubDownloadRecord;
+
   {TOSDbSubEntryRecord =
   Record
     seISO639          : String; // Country ID
@@ -43,6 +52,13 @@ type
     seZipDownloadLink : String; // Download URL of ZIP archive containing subtitle
   End;
   POSDbSubEntryRecord = ^TOSDbSubEntryRecord;}
+
+  TUTF8XmlParser = class(TXmlParser)
+  public
+    function TranslateEncoding(const Source : String) : String; Override;
+  end;
+
+
 
   TStayAliveDataRecord =
   Record
@@ -55,8 +71,9 @@ type
   function  OSDb_LogOut(sToken, sUserAgent: String; Secure : Boolean) : HResult;
   function  OSDb_SearchSubtitles(sToken, sUserAgent, sMovieHash: string; iMovieByteSize: Int64; var SubSearchData : PSubPluginRecord; Secure : Boolean) : HResult;
   function  OSDb_StayAlive(sToken, sUserAgent: String; StayAliveData : PStayAliveDataRecord; Secure : Boolean) : HResult;
-  function  GetXMLValue(XmlParser : TXMLParser) : String;
-  procedure GetMemberValues(XmlParser : TXmlParser; var Name, Value : String);
+  function  GetXMLValue(XmlParser : TUTF8XMLParser) : String;
+  procedure GetMemberValues(XmlParser : TUTF8XMLParser; var Name, Value : String);
+
 
 
 var
@@ -69,7 +86,13 @@ implementation
 uses misc_utils_unit, sysutils, windows, classes;
 
 
-procedure GetMemberValues(XmlParser : TXmlParser; var Name, Value : String);
+function TUTF8XmlParser.TranslateEncoding(const Source : String) : String; 
+begin
+  Result := Source;
+end;
+
+
+procedure GetMemberValues(XmlParser : TUTF8XMLParser; var Name, Value : String);
 begin
   Name  := '';
   Value := '';
@@ -100,7 +123,7 @@ begin
 end;
 
 
-function GetXMLValue(XmlParser : TXMLParser) : String;
+function GetXMLValue(XmlParser : TUTF8XMLParser) : String;
 begin
   XmlParser.Scan; // </name>
   XmlParser.Scan; // <value>
@@ -135,14 +158,21 @@ const
 var
   sURL      : String;
   sResult   : String;
-  XmlParser : TXmlParser;
+  XmlParser : TUTF8XMLParser;
   ErrCode   : Boolean;
   mName     : String;
   mValue    : String;
 
 
 begin
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_Login begin');{$ENDIF}
+  {$IFDEF LOCALTRACE}
+  DebugMsgFT(logPath,'*** OSDb_Login begin'+CRLF);
+  DebugMsgFT(logPath,'User Name : '+sUsername);
+  DebugMsgFT(logPath,'Password  : '+sPassword);
+  DebugMsgFT(logPath,'Language  : '+sLanguage);
+  DebugMsgFT(logPath,'UserAgent : '+sUserAgent+CRLF);
+  {$ENDIF}
+
   Result := E_FAIL;
   If Secure = True then sURL := OSDbURLsecure else sURL := OSDbURLnormal;
   sResult := XML_RPC(sURL,sUserAgent,Format(LOG_IN,[sUsername,sPassword,sLanguage,sUserAgent]),Secure);
@@ -208,7 +238,7 @@ begin
   If sResult <> '' then
   Begin
     // Parse results
-    XmlParser := TXmlParser.Create;
+    XmlParser := TUTF8XMLParser.Create;
     XmlParser.Normalize := True;
     XmlParser.LoadFromBuffer(PChar(sResult));
 
@@ -288,7 +318,6 @@ begin
 
     {$IFDEF LOCALTRACE}
     DebugMsgFT(logPath,'Token                 : '+LoginData^.Token);
-    DebugMsgFT(logPath,'Status                : '+IntToStr(LoginData^.Status));
     DebugMsgFT(logPath,'IDUser                : '+IntToStr(LoginData^.IDUser));
     DebugMsgFT(logPath,'UserNickName          : '+LoginData^.UserNickName);
     DebugMsgFT(logPath,'UserRank              : '+LoginData^.UserRank);
@@ -302,8 +331,8 @@ begin
   {$IFDEF LOCALTRACE}Else DebugMsgFT(logPath,'Zero length reply'){$ENDIF};
 
 
-
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_Login end'+CRLF{+sResult});{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_Login end, status '+IntTostr(LoginData^.Status)+', result #'+IntToHex(Result,8));{$ENDIF}
+  {$IFDEF LOCALTRACE}If LoginData^.Status <> 200 then DebugMsgFT(logPath,CRLF+sResult);{$ENDIF}
 end;
 
 
@@ -326,7 +355,7 @@ begin
   Result := S_OK;
   If Secure = True then sURL := OSDbURLsecure else sURL := OSDbURLnormal;
   sResult := XML_RPC(sURL,sUserAgent,Format(LOG_OUT,[sToken]),Secure);
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_LogOut:'+CRLF+CRLF{+sResult});{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_LogOut, result #'+IntToHex(Result,8)+CRLF+CRLF{+sResult});{$ENDIF}
 end;
 
 
@@ -371,8 +400,7 @@ var
   sResult             : String;
   mName               : String;
   mValue              : String;
-  sList               : TStringList;
-  XmlParser           : TXmlParser;
+  XmlParser           : TUTF8XMLParser;
   ErrCode             : Boolean;
   sISO639             : String; // Country ID
   sLanguageName       : String; // Language name
@@ -385,6 +413,8 @@ var
   sSubRating          : String;
   sSubHearingImpaired : String;
   S                   : String;
+  sUTF8               : String;
+  iLen                : Integer;
 begin
   {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_SearchSubtitles begin');{$ENDIF}
   Result              := E_FAIL;
@@ -407,7 +437,7 @@ begin
 
   If sResult <> '' then
   Begin
-    XmlParser := TXmlParser.Create;
+    XmlParser := TUTF8XMLParser.Create;
     XmlParser.Normalize := True;
     XmlParser.LoadFromBuffer(PChar(sResult));
 
@@ -523,7 +553,15 @@ begin
       sList.Text := sResult;
       sList.SaveToFile('d:\test.txt');}
       Result                 := S_OK;
-      SubSearchData^.SubData := PChar(sSubData);
+
+      sUTF8 := UTF8Encode(sSubData);
+      iLen  := Length(sUTF8);
+      If iLen < 1024*1024 then
+      Begin
+        Move(sUTF8[1],SubSearchData^.SubData^,iLen);
+        //SubSearchData^.SubData := PChar(sSubData);
+      End
+      {$IFDEF LOCALTRACE}Else DebugMsgFT(logPath,'Parsed results larger than the 1mb buffer!!!'){$ENDIF};
     End;
 
     XmlParser.Free;
@@ -531,7 +569,8 @@ begin
   {$IFDEF LOCALTRACE}Else DebugMsgFT(logPath,'Zero length reply'){$ENDIF};
 
 
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_SearchSubtitles end'{+sResult});{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_SearchSubtitles end, status '+IntTostr(SubSearchData^.Status)+', result #'+IntToHex(Result,8));{$ENDIF}
+  {$IFDEF LOCALTRACE}If SubSearchData^.Status <> 200 then DebugMsgFT(logPath,CRLF+sResult);{$ENDIF}
 end;
 
 
@@ -550,7 +589,7 @@ const
 var
   sURL    : String;
   sResult : String;
-  XmlParser : TXmlParser;
+  XmlParser : TUTF8XMLParser;
   ErrCode   : Boolean;
   mName     : String;
   mValue    : String;
@@ -561,7 +600,7 @@ begin
 
   If sResult <> '' then
   Begin
-    XmlParser := TXmlParser.Create;
+    XmlParser := TUTF8XMLParser.Create;
     XmlParser.Normalize := True;
     XmlParser.LoadFromBuffer(PChar(sResult));
 
@@ -584,10 +623,11 @@ begin
               csStayAlive.Enter;
               Try
                 StayAliveData^.Status := StrToIntDef(Copy(mValue,1,3),E_FAIL);
+                If StayAliveData^.Status = 200 then Result := S_OK;
               Finally
                 csStayAlive.Leave;
               End;
-              {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Status          : '+Copy(mValue,1,3));{$ENDIF}
+              {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'Status          : '+mValue);{$ENDIF}
             End
               else;
           End;
@@ -596,7 +636,7 @@ begin
     End;
   End;
 
-  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_StayAlive:'+CRLF+CRLF{+sResult});{$ENDIF}
+  {$IFDEF LOCALTRACE}DebugMsgFT(logPath,'*** OSDb_StayAlive, result #'+IntToHex(Result,8)+CRLF+CRLF{+sResult});{$ENDIF}
 end;
 
 
